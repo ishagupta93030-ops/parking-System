@@ -1,0 +1,167 @@
+:root {
+  --font-sans: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --color-vacant: #10b981;
+  --color-occupied: #f43f5e;
+  --color-user: #2563eb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #f1f5f9;
+  color: #0f172a;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+code, pre, .font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Leaflet Container & Markers */
+.leaflet-container {
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 0.875rem;
+  background-color: #f1f5f9;
+  font-family: inherit;
+}
+.facility-marker-pin, .user-live-pin {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Card Modern Elevation */
+.card-panel {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 1rem;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s ease-in-out;
+}
+
+/* Status Card Vacant / Occupied Theming */
+.status-card.vacant {
+  background: linear-gradient(135deg, #ffffff 0%, #ecfdf5 100%);
+  border: 2px solid #a7f3d0;
+}
+.status-card.occupied {
+  background: linear-gradient(135deg, #ffffff 0%, #fff1f2 100%);
+  border: 2px solid #fecdd3;
+}
+.status-card.no_reading {
+  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+  border: 2px solid #e2e8f0;
+}
+
+/* Top-View Simulator Bay Card */
+.top-slot-card {
+  position: relative;
+  background: #0f172a;
+  border: 2px solid #334155;
+  border-radius: 0.875rem;
+  padding: 0.875rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 200px;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.top-slot-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+}
+
+.top-slot-card.vacant {
+  background: radial-gradient(circle at center, #064e3b22 0%, #022c22 100%), #0f172a;
+  border-color: #059669;
+}
+.top-slot-card.vacant:hover {
+  border-color: #10b981;
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.25);
+}
+
+.top-slot-card.occupied {
+  background: radial-gradient(circle at center, #88133722 0%, #4c0519 100%), #0f172a;
+  border-color: #e11d48;
+}
+.top-slot-card.occupied:hover {
+  border-color: #f43f5e;
+  box-shadow: 0 0 20px rgba(244, 63, 94, 0.25);
+}
+
+.top-slot-card.user-spot {
+  background: radial-gradient(circle at center, #1e3a8a33 0%, #172554 100%), #0f172a;
+  border-color: #3b82f6;
+  box-shadow: 0 0 22px rgba(59, 130, 246, 0.35);
+}
+
+/* Pulse animation for active beacons */
+@keyframes beaconPulse {
+  0% { transform: scale(0.9); opacity: 0.9; }
+  50% { transform: scale(1.3); opacity: 0.3; }
+  100% { transform: scale(0.9); opacity: 0.9; }
+}
+
+.beacon-pulse {
+  animation: beaconPulse 2s infinite ease-in-out;
+  transform-origin: center;
+}
+
+/* Voice Speaking Wave Animation */
+@keyframes voiceWave {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); filter: brightness(1.2); }
+}
+
+.voice-speaking-pulse {
+  animation: voiceWave 0.6s infinite ease-in-out;
+}
+
+/* Printable Receipt Styles */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #printable-receipt-modal,
+  #printable-receipt-modal * {
+    visibility: visible;
+  }
+  #printable-receipt-modal {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+    border: none;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
