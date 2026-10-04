@@ -1,299 +1,437 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  StyleSheet, 
-  Text, 
-  View, 
-  TouchableOpacity, 
-  ScrollView, 
-  SafeAreaView, 
+import {
+  StyleSheet,
+  View,
+  Text,
+  TouchableOpacity,
+  SafeAreaView,
   StatusBar,
-  TextInput,
-  Alert
+  Alert,
+  Platform
 } from 'react-native';
-import { supabase } from './supabase';
+import { COLORS } from './src/theme/colors';
+import { Header } from './src/components/Header';
+import { HomeScreen } from './src/screens/HomeScreen';
+import { ExploreMapScreen } from './src/screens/ExploreMapScreen';
+import { SlotsScreen } from './src/screens/SlotsScreen';
+import { MyPassScreen } from './src/screens/MyPassScreen';
+import { RatesScreen } from './src/screens/RatesScreen';
+import { ProfileScreen } from './src/screens/ProfileScreen';
+import { BookingModal } from './src/components/BookingModal';
+import { DigitalPassModal } from './src/components/DigitalPassModal';
+import { VehicleManagerModal } from './src/components/VehicleManagerModal';
+import { INITIAL_FLOORS } from './src/data/slotsData';
+import { PARKING_FACILITIES } from './src/data/facilitiesData';
+import {
+  generateTicketId,
+  findNearestVacantSlot,
+  calculateParkingCost
+} from './src/services/bookingService';
+import {
+  createCloudBooking,
+  releaseCloudBooking,
+  subscribeToSlotChanges,
+  getClient
+} from './src/services/supabaseService';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('home'); // 'home', 'rates', 'ticket'
-  const [vacantSpots, setVacantSpots] = useState(18);
+  // Navigation & Screen Tab
+  const [activeTab, setActiveTab] = useState('home'); // 'home', 'explore', 'slots', 'pass', 'rates', 'profile'
+
+  // Application Data State
+  const [floors, setFloors] = useState(INITIAL_FLOORS);
+  const [currentPlate, setCurrentPlate] = useState('DL 01 AB 4589');
   const [activeBooking, setActiveBooking] = useState(null);
-  const [selectedHours, setSelectedHours] = useState(1);
-  const [plateNumber, setPlateNumber] = useState('DL 01 AB 4589');
+  const [history, setHistory] = useState([
+    {
+      ticketId: '#PS-MOB-9120',
+      plate: 'DL 01 AB 4589',
+      bay: 'Bay L1-03',
+      entryTime: 'Yesterday, 04:30 PM',
+      totalAmount: '31.50',
+      status: 'COMPLETED'
+    }
+  ]);
+  const [isCloudConnected, setIsCloudConnected] = useState(false);
 
-  // 1-Hour Fixed Tariff
-  const hourlyRate = 30.0;
-  const gstTax = hourlyRate * 0.05;
-  const oneHourTotal = hourlyRate + gstTax;
+  // Modals
+  const [bookingModalVisible, setBookingModalVisible] = useState(false);
+  const [passModalVisible, setPassModalVisible] = useState(false);
+  const [vehicleModalVisible, setVehicleModalVisible] = useState(false);
+  const [modalFacility, setModalFacility] = useState(PARKING_FACILITIES[0]);
+  const [modalSlot, setModalSlot] = useState(null);
 
-  // Total for selected hours
-  const totalPayable = (hourlyRate * selectedHours * 1.05).toFixed(2);
+  // Initialize Supabase & Real-time Listeners
+  useEffect(() => {
+    const client = getClient();
+    if (client) {
+      setIsCloudConnected(true);
+    }
 
-  const handleBookSpot = () => {
-    const booking = {
-      ticketId: `#PS-MOB-${Math.floor(100 + Math.random() * 900)}`,
-      bay: 'Bay L1-04',
-      plate: plateNumber,
-      hours: selectedHours,
-      total: totalPayable,
-      startTime: new Date().toLocaleTimeString(),
+    const channel = subscribeToSlotChanges(payload => {
+      if (payload && payload.new) {
+        const { name, status, plate } = payload.new;
+        setFloors(prevFloors =>
+          prevFloors.map(floor => ({
+            ...floor,
+            slots: floor.slots.map(s =>
+              s.name === name ? { ...s, status, plate: plate || null } : s
+            )
+          }))
+        );
+      }
+    });
+
+    return () => {
+      if (channel) channel.unsubscribe();
     };
-    setActiveBooking(booking);
-    setVacantSpots(prev => Math.max(0, prev - 1));
-    setActiveTab('ticket');
-    Alert.alert('Booking Confirmed!', `Reserved for ${selectedHours} hour(s). Total: ₹${totalPayable}`);
+  }, []);
+
+  // Compute Total Live Vacancy
+  const totalCapacity = floors.reduce((acc, f) => acc + f.slots.length, 0);
+  const totalVacantSpots = floors.reduce(
+    (acc, f) => acc + f.slots.filter(s => s.status === 'VACANT').length,
+    0
+  );
+
+  // Quick 1-Tap Booking Trigger
+  const handleQuickPark = () => {
+    if (activeBooking) {
+      Alert.alert(
+        'Active Parking Exists',
+        `You already have an active pass in ${activeBooking.bay}. View your gate pass or check out first.`,
+        [
+          { text: 'View Pass', onPress: () => setPassModalVisible(true) },
+          { text: 'OK', style: 'cancel' }
+        ]
+      );
+      return;
+    }
+
+    const nearest = findNearestVacantSlot(floors);
+    if (!nearest) {
+      Alert.alert('Facility Full', 'All bays are currently occupied. Please select another facility.');
+      return;
+    }
+
+    setModalFacility(PARKING_FACILITIES[0]);
+    setModalSlot(nearest.slot);
+    setBookingModalVisible(true);
+  };
+
+  // Select Facility Direct Book
+  const handleBookFacility = (facility) => {
+    setModalFacility(facility);
+    const nearest = findNearestVacantSlot(floors);
+    setModalSlot(nearest ? nearest.slot : null);
+    setBookingModalVisible(true);
+  };
+
+  // Select Specific Slot from 2D Layout
+  const handleBookSpecificSlot = (slot, floor) => {
+    setModalFacility(PARKING_FACILITIES[0]);
+    setModalSlot(slot);
+    setBookingModalVisible(true);
+  };
+
+  // Complete Reservation & Commit
+  const handleConfirmBooking = async (bookingData) => {
+    const ticketId = generateTicketId();
+    const bayName = bookingData.slot ? bookingData.slot.name : 'Bay L1-01';
+    const slotId = bookingData.slot ? bookingData.slot.id : 'L1-01';
+
+    const newBooking = {
+      ticketId,
+      plate: bookingData.plate,
+      bay: `${slotId} (${bayName})`,
+      slotId,
+      hours: bookingData.hours,
+      baseFare: bookingData.costSummary.baseFare,
+      tax: bookingData.costSummary.tax,
+      totalAmount: bookingData.costSummary.totalAmount,
+      startTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      createdAt: new Date().toISOString()
+    };
+
+    // 1. Update local slot state to OCCUPIED
+    setFloors(prev =>
+      prev.map(floor => ({
+        ...floor,
+        slots: floor.slots.map(s =>
+          s.id === slotId ? { ...s, status: 'OCCUPIED', plate: bookingData.plate } : s
+        )
+      }))
+    );
+
+    // 2. Set active booking & history
+    setActiveBooking(newBooking);
+    setHistory(prev => [newBooking, ...prev]);
+
+    // 3. Dispatch to Supabase Cloud
+    await createCloudBooking({
+      ticketId,
+      plate: bookingData.plate,
+      bay: bayName,
+      hours: bookingData.hours,
+      baseFare: bookingData.costSummary.baseFare,
+      tax: bookingData.costSummary.tax,
+      totalAmount: bookingData.costSummary.totalAmount
+    });
+
+    // Close booking modal and open gate pass
+    setBookingModalVisible(false);
+    setPassModalVisible(true);
+
+    Alert.alert(
+      '🎉 Booking Confirmed!',
+      `Your digital gate pass is ready for ${newBooking.bay}. Show QR at the entrance boom barrier.`
+    );
+  };
+
+  // Leave Bay & Check out
+  const handleLeaveBay = async (booking) => {
+    // 1. Free local slot
+    if (booking.slotId) {
+      setFloors(prev =>
+        prev.map(floor => ({
+          ...floor,
+          slots: floor.slots.map(s =>
+            s.id === booking.slotId ? { ...s, status: 'VACANT', plate: null } : s
+          )
+        }))
+      );
+    }
+
+    // 2. Cloud release
+    await releaseCloudBooking(booking.ticketId, booking.bay);
+
+    // 3. Clear active booking
+    setActiveBooking(null);
+    setPassModalVisible(false);
+
+    Alert.alert(
+      '🚗 Parking Session Ended',
+      `Thank you for using ParkSense IoT! The exit barrier has been signaled.`
+    );
+  };
+
+  // Rate calculator booking redirect
+  const handleRateBookRedirect = (facility, vehicleType, hours) => {
+    setModalFacility(facility);
+    const nearest = findNearestVacantSlot(floors);
+    setModalSlot(nearest ? nearest.slot : null);
+    setBookingModalVisible(true);
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#1e3a8a" />
-      
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar barStyle="light-content" backgroundColor="#0f172a" />
+
       {/* Top Header */}
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.headerTitle}>🚗 ParkSense IoT</Text>
-          <Text style={styles.headerSubtitle}>Smart Driver Mobile Pass</Text>
-        </View>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>{plateNumber}</Text>
-        </View>
-      </View>
+      <Header
+        currentPlate={currentPlate}
+        onOpenVehicleModal={() => setVehicleModalVisible(true)}
+        isCloudConnected={isCloudConnected}
+        activeBooking={activeBooking}
+      />
 
-      {/* Main Body */}
-      <ScrollView contentContainerStyle={styles.body}>
-        {/* Active Booking Banner */}
-        {activeBooking && (
-          <View style={styles.activeBanner}>
-            <Text style={styles.activeBannerTitle}>⭐ YOUR ACTIVE PARKING</Text>
-            <Text style={styles.activeBannerText}>
-              {activeBooking.bay} • {activeBooking.ticketId}
-            </Text>
-            <Text style={styles.activeBannerSub}>
-              Entry: {activeBooking.startTime} | Paid: ₹{activeBooking.total}
-            </Text>
-          </View>
-        )}
-
-        {/* TAB 1: HOME */}
+      {/* Screen Body Viewport */}
+      <View style={styles.screenContainer}>
         {activeTab === 'home' && (
-          <View>
-            {/* 1-Hour Fixed Rate Card */}
-            <View style={styles.pricingHero}>
-              <Text style={styles.pricingHeroLabel}>OFFICIAL 1-HOUR FIXED PARKING TARIFF</Text>
-              <Text style={styles.pricingHeroAmount}>₹ {oneHourTotal.toFixed(2)}</Text>
-              <Text style={styles.pricingHeroDetail}>₹30.00 Base + ₹1.50 GST (First 15m Free)</Text>
-            </View>
-
-            {/* Quick Live Occupancy */}
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Live Parking Availability</Text>
-              <View style={styles.statsRow}>
-                <View style={styles.statBox}>
-                  <Text style={styles.statNumberGreen}>{vacantSpots}</Text>
-                  <Text style={styles.statLabel}>Available</Text>
-                </View>
-                <View style={styles.statBox}>
-                  <Text style={styles.statNumberRed}>6</Text>
-                  <Text style={styles.statLabel}>Occupied</Text>
-                </View>
-                <View style={styles.statBox}>
-                  <Text style={styles.statNumberBlue}>24</Text>
-                  <Text style={styles.statLabel}>Total Bays</Text>
-                </View>
-              </View>
-            </View>
-
-            {/* Quick Reservation Button */}
-            <TouchableOpacity style={styles.primaryButton} onPress={handleBookSpot}>
-              <Text style={styles.primaryButtonText}>⚡ Reserve Nearest Free Bay Now</Text>
-            </TouchableOpacity>
-
-            {/* Duration Selector */}
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Select Duration</Text>
-              <View style={styles.pillRow}>
-                {[1, 2, 4, 8].map(h => (
-                  <TouchableOpacity
-                    key={h}
-                    style={[styles.pill, selectedHours === h && styles.pillActive]}
-                    onPress={() => setSelectedHours(h)}
-                  >
-                    <Text style={[styles.pillText, selectedHours === h && styles.pillTextActive]}>
-                      {h} Hr{h > 1 ? 's' : ''}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <Text style={styles.calcSummary}>
-                Estimated Total: ₹ {totalPayable} (incl. 5% GST)
-              </Text>
-            </View>
-          </View>
+          <HomeScreen
+            activeBooking={activeBooking}
+            onQuickPark={handleQuickPark}
+            onOpenPass={() => setPassModalVisible(true)}
+            onSelectFacility={fac => {
+              setModalFacility(fac);
+              setActiveTab('rates');
+            }}
+            onBookFacility={handleBookFacility}
+            totalVacantSpots={totalVacantSpots}
+            totalCapacity={totalCapacity}
+            onOpenRates={() => setActiveTab('rates')}
+          />
         )}
 
-        {/* TAB 2: RATES */}
+        {activeTab === 'explore' && (
+          <ExploreMapScreen
+            onSelectFacility={fac => {
+              setModalFacility(fac);
+              setActiveTab('rates');
+            }}
+            onBookFacility={handleBookFacility}
+          />
+        )}
+
+        {activeTab === 'slots' && (
+          <SlotsScreen
+            floors={floors}
+            onBookSlot={handleBookSpecificSlot}
+          />
+        )}
+
+        {activeTab === 'pass' && (
+          <MyPassScreen
+            activeBooking={activeBooking}
+            history={history}
+            onLeaveBay={handleLeaveBay}
+            onNavigateHome={() => setActiveTab('home')}
+          />
+        )}
+
         {activeTab === 'rates' && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Transparent Hourly Rate Card</Text>
-            <View style={styles.rateRow}>
-              <Text style={styles.rateLabel}>🚗 Standard Car</Text>
-              <Text style={styles.rateValue}>₹ 30.00 / hr</Text>
-            </View>
-            <View style={styles.rateRow}>
-              <Text style={styles.rateLabel}>🚙 Large SUV</Text>
-              <Text style={styles.rateValue}>₹ 40.00 / hr</Text>
-            </View>
-            <View style={styles.rateRow}>
-              <Text style={styles.rateLabel}>🏍️ Two-Wheeler</Text>
-              <Text style={styles.rateValue}>₹ 15.00 / hr</Text>
-            </View>
-            <View style={styles.rateRow}>
-              <Text style={styles.rateLabel}>⚡ EV + Fast Charging</Text>
-              <Text style={styles.rateValue}>₹ 50.00 / hr</Text>
-            </View>
-          </View>
+          <RatesScreen
+            onProceedToBooking={handleRateBookRedirect}
+          />
         )}
 
-        {/* TAB 3: DIGITAL TICKET */}
-        {activeTab === 'ticket' && (
-          <View style={styles.ticketCard}>
-            <Text style={styles.ticketHeader}>PARKSENSE DIGITAL GATE PASS</Text>
-            <View style={styles.ticketDashed} />
-            <Text style={styles.ticketInfo}>Ticket: {activeBooking?.ticketId || '#PS-MOB-701'}</Text>
-            <Text style={styles.ticketInfo}>Vehicle: {activeBooking?.plate || plateNumber}</Text>
-            <Text style={styles.ticketInfo}>Assigned Bay: {activeBooking?.bay || 'Bay L1-04'}</Text>
-            <Text style={styles.ticketInfo}>Duration: {activeBooking?.hours || 1} Hour(s)</Text>
-            <Text style={styles.ticketTotal}>TOTAL PAID: ₹ {activeBooking?.total || '31.50'}</Text>
-            <View style={styles.qrPlaceholder}>
-              <Text style={styles.qrText}>[ VERIFIED IOT QR PASS ]</Text>
-            </View>
-          </View>
+        {activeTab === 'profile' && (
+          <ProfileScreen
+            currentPlate={currentPlate}
+            onOpenVehicleModal={() => setVehicleModalVisible(true)}
+            isCloudConnected={isCloudConnected}
+          />
         )}
-      </ScrollView>
+      </View>
 
-      {/* Bottom Navigation */}
-      <View style={styles.navbar}>
-        <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('home')}>
-          <Text style={[styles.navText, activeTab === 'home' && styles.navTextActive]}>🏠 Home</Text>
+      {/* Bottom Navigation Bar */}
+      <View style={styles.bottomNav}>
+        <TouchableOpacity
+          style={styles.navBtn}
+          onPress={() => setActiveTab('home')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.navIcon, activeTab === 'home' && styles.navIconActive]}>🏠</Text>
+          <Text style={[styles.navLabel, activeTab === 'home' && styles.navLabelActive]}>Home</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('rates')}>
-          <Text style={[styles.navText, activeTab === 'rates' && styles.navTextActive]}>💰 1-Hr Rates</Text>
+
+        <TouchableOpacity
+          style={styles.navBtn}
+          onPress={() => setActiveTab('explore')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.navIcon, activeTab === 'explore' && styles.navIconActive]}>🗺️</Text>
+          <Text style={[styles.navLabel, activeTab === 'explore' && styles.navLabelActive]}>Explore</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('ticket')}>
-          <Text style={[styles.navText, activeTab === 'ticket' && styles.navTextActive]}>🎫 My Pass</Text>
+
+        <TouchableOpacity
+          style={styles.navBtn}
+          onPress={() => setActiveTab('slots')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.navIcon, activeTab === 'slots' && styles.navIconActive]}>🏗️</Text>
+          <Text style={[styles.navLabel, activeTab === 'slots' && styles.navLabelActive]}>Floors</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navBtn}
+          onPress={() => setActiveTab('pass')}
+          activeOpacity={0.8}
+        >
+          <View style={styles.passIconWrap}>
+            <Text style={[styles.navIcon, activeTab === 'pass' && styles.navIconActive]}>🎫</Text>
+            {activeBooking && <View style={styles.navBadgeDot} />}
+          </View>
+          <Text style={[styles.navLabel, activeTab === 'pass' && styles.navLabelActive]}>My Pass</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navBtn}
+          onPress={() => setActiveTab('rates')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.navIcon, activeTab === 'rates' && styles.navIconActive]}>💰</Text>
+          <Text style={[styles.navLabel, activeTab === 'rates' && styles.navLabelActive]}>Tariff</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navBtn}
+          onPress={() => setActiveTab('profile')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.navIcon, activeTab === 'profile' && styles.navIconActive]}>👤</Text>
+          <Text style={[styles.navLabel, activeTab === 'profile' && styles.navLabelActive]}>Profile</Text>
         </TouchableOpacity>
       </View>
+
+      {/* MODALS */}
+      <BookingModal
+        visible={bookingModalVisible}
+        onClose={() => setBookingModalVisible(false)}
+        facility={modalFacility}
+        slot={modalSlot}
+        currentPlate={currentPlate}
+        onConfirmBooking={handleConfirmBooking}
+      />
+
+      <DigitalPassModal
+        visible={passModalVisible}
+        onClose={() => setPassModalVisible(false)}
+        booking={activeBooking}
+        onLeaveBay={handleLeaveBay}
+      />
+
+      <VehicleManagerModal
+        visible={vehicleModalVisible}
+        onClose={() => setVehicleModalVisible(false)}
+        currentPlate={currentPlate}
+        onSelectPlate={setCurrentPlate}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f1f5f9' },
-  header: {
-    backgroundColor: '#1d4ed8',
-    padding: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  headerTitle: { fontSize: 20, fontWeight: '900', color: '#ffffff' },
-  headerSubtitle: { fontSize: 11, color: '#bfdbfe', fontWeight: '600' },
-  badge: { backgroundColor: '#1e3a8a', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  badgeText: { color: '#ffffff', fontFamily: 'monospace', fontWeight: 'bold', fontSize: 12 },
-  body: { padding: 16, paddingBottom: 40 },
-  activeBanner: {
-    backgroundColor: '#0284c7',
-    padding: 14,
-    borderRadius: 16,
-    marginBottom: 14,
-  },
-  activeBannerTitle: { color: '#e0f2fe', fontSize: 10, fontWeight: '900', letterSpacing: 1 },
-  activeBannerText: { color: '#ffffff', fontSize: 16, fontWeight: '900', marginTop: 2 },
-  activeBannerSub: { color: '#bae6fd', fontSize: 11, marginTop: 2 },
-  pricingHero: {
-    backgroundColor: '#1e40af',
-    padding: 18,
-    borderRadius: 20,
-    marginBottom: 14,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
-    elevation: 4,
-  },
-  pricingHeroLabel: { color: '#bfdbfe', fontSize: 10, fontWeight: '900', letterSpacing: 1 },
-  pricingHeroAmount: { color: '#ffffff', fontSize: 36, fontWeight: '900', marginVertical: 4 },
-  pricingHeroDetail: { color: '#dbeafe', fontSize: 11, fontWeight: 'bold' },
-  card: {
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  cardTitle: { fontSize: 14, fontWeight: '900', color: '#0f172a', marginBottom: 12 },
-  statsRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  statBox: { alignItems: 'center', flex: 1 },
-  statNumberGreen: { fontSize: 28, fontWeight: '900', color: '#059669' },
-  statNumberRed: { fontSize: 28, fontWeight: '900', color: '#e11d48' },
-  statNumberBlue: { fontSize: 28, fontWeight: '900', color: '#2563eb' },
-  statLabel: { fontSize: 11, color: '#64748b', fontWeight: 'bold' },
-  primaryButton: {
-    backgroundColor: '#059669',
-    padding: 16,
-    borderRadius: 16,
-    alignItems: 'center',
-    marginBottom: 14,
-    shadowColor: '#059669',
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  primaryButtonText: { color: '#ffffff', fontSize: 14, fontWeight: '900' },
-  pillRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-  pill: {
-    backgroundColor: '#f1f5f9',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-  },
-  pillActive: { backgroundColor: '#2563eb', borderColor: '#2563eb' },
-  pillText: { fontSize: 12, fontWeight: 'bold', color: '#334155' },
-  pillTextActive: { color: '#ffffff' },
-  calcSummary: { fontSize: 12, fontWeight: 'bold', color: '#059669', textAlign: 'center', marginTop: 4 },
-  rateRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },
-  rateLabel: { fontSize: 13, fontWeight: 'bold', color: '#334155' },
-  rateValue: { fontSize: 13, fontWeight: '900', color: '#059669', fontFamily: 'monospace' },
-  ticketCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 20,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-    alignItems: 'center',
-  },
-  ticketHeader: { fontSize: 14, fontWeight: '900', color: '#0f172a', letterSpacing: 1 },
-  ticketDashed: { width: '100%', height: 1, borderWidth: 1, borderColor: '#cbd5e1', borderStyle: 'dashed', marginVertical: 12 },
-  ticketInfo: { fontSize: 12, color: '#475569', marginBottom: 6, fontWeight: '600' },
-  ticketTotal: { fontSize: 18, fontWeight: '900', color: '#059669', marginVertical: 8 },
-  qrPlaceholder: {
+  safeArea: {
+    flex: 1,
     backgroundColor: '#0f172a',
-    padding: 16,
-    borderRadius: 12,
-    marginTop: 10,
-    width: '80%',
-    alignItems: 'center',
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0,
   },
-  qrText: { color: '#38bdf8', fontSize: 11, fontWeight: 'bold', fontFamily: 'monospace' },
-  navbar: {
-    backgroundColor: '#ffffff',
+  screenContainer: {
+    flex: 1,
+    backgroundColor: COLORS.bgDark,
+  },
+  bottomNav: {
+    backgroundColor: '#0f172a',
     flexDirection: 'row',
     borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
-    paddingVertical: 10,
+    borderTopColor: '#1e293b',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
   },
-  navItem: { flex: 1, alignItems: 'center' },
-  navText: { fontSize: 12, color: '#64748b', fontWeight: 'bold' },
-  navTextActive: { color: '#2563eb', fontWeight: '900' },
+  navBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  passIconWrap: {
+    position: 'relative',
+  },
+  navBadgeDot: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: COLORS.success,
+  },
+  navIcon: {
+    fontSize: 18,
+    marginBottom: 2,
+    opacity: 0.6,
+  },
+  navIconActive: {
+    opacity: 1.0,
+    transform: [{ scale: 1.15 }],
+  },
+  navLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#64748b',
+  },
+  navLabelActive: {
+    color: '#38bdf8',
+    fontWeight: '900',
+  },
 });
