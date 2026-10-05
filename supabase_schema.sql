@@ -68,6 +68,17 @@ CREATE TABLE IF NOT EXISTS public.system_logs (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
 
+-- 6. Research Response Time & Latency Benchmarks
+CREATE TABLE IF NOT EXISTS public.sensor_benchmarks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source VARCHAR(30) NOT NULL, -- 'HARDWARE' or 'SIMULATION'
+    event_type VARCHAR(50) NOT NULL, -- 'VEHICLE_ARRIVED', 'VEHICLE_DEPARTED'
+    detection_to_ui_ms NUMERIC(10, 2) NOT NULL,
+    ui_to_db_ms NUMERIC(10, 2) NOT NULL,
+    total_response_ms NUMERIC(10, 2) NOT NULL,
+    measured_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
 -- ============================================================================
 -- Enable Row Level Security (RLS) & Public Read/Write Access
 -- ============================================================================
@@ -76,12 +87,14 @@ ALTER TABLE public.parking_facilities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.parking_slots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.admin_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.system_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sensor_benchmarks ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow public read-write for vehicle_records" ON public.vehicle_records FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow public read-write for parking_facilities" ON public.parking_facilities FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow public read-write for parking_slots" ON public.parking_slots FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow public read-write for admin_settings" ON public.admin_settings FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow public read-write for system_logs" ON public.system_logs FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public read-write for sensor_benchmarks" ON public.sensor_benchmarks FOR ALL USING (true) WITH CHECK (true);
 
 -- Enable Realtime Broadcasts on tables
 ALTER PUBLICATION supabase_realtime ADD TABLE public.vehicle_records;

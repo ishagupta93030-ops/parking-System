@@ -27,27 +27,27 @@ export const INITIAL_FLOORS = {
     id: 'B1',
     name: 'Basement Level (B1)',
     slots: {
-      'B1-01': { id: 'B1-01', name: 'Bay 01', floor: 'B1', status: 'VACANT', plate: null, start: null, carColor: 'emerald' },
-      'B1-02': { id: 'B1-02', name: 'Bay 02', floor: 'B1', status: 'OCCUPIED', plate: 'MH 12 PK 3410', start: Date.now() - 154000, carColor: 'ruby' },
-      'B1-03': { id: 'B1-03', name: 'Bay 03', floor: 'B1', status: 'VACANT', plate: null, start: null, carColor: 'amber' }
+      'B1-01': { id: 'B1-01', name: 'Bay 01', floor: 'B1', status: 'VACANT', plate: null, start: null, carColor: 'emerald', threshold: 10.0, sensorHealth: 'HEALTHY' },
+      'B1-02': { id: 'B1-02', name: 'Bay 02', floor: 'B1', status: 'OCCUPIED', plate: 'MH 12 PK 3410', start: Date.now() - 154000, carColor: 'ruby', threshold: 10.0, sensorHealth: 'HEALTHY' },
+      'B1-03': { id: 'B1-03', name: 'Bay 03', floor: 'B1', status: 'VACANT', plate: null, start: null, carColor: 'amber', threshold: 10.0, sensorHealth: 'HEALTHY' }
     }
   },
   L1: {
     id: 'L1',
     name: 'Ground Floor (Main & IoT)',
     slots: {
-      'L1-01': { id: 'L1-01', name: 'Bay 01', floor: 'L1', status: 'VACANT', plate: 'DL 01 AB 4589', start: null, isHardware: true, carColor: 'cyan' },
-      'L1-02': { id: 'L1-02', name: 'Bay 02', floor: 'L1', status: 'VACANT', plate: null, start: null, carColor: 'blue' },
-      'L1-03': { id: 'L1-03', name: 'Bay 03', floor: 'L1', status: 'OCCUPIED', plate: 'UP 16 BZ 9022', start: Date.now() - 210000, carColor: 'ruby' }
+      'L1-01': { id: 'L1-01', name: 'Bay 01', floor: 'L1', status: 'VACANT', plate: 'DL 01 AB 4589', start: null, isHardware: true, carColor: 'cyan', threshold: 10.0, sensorHealth: 'HEALTHY' },
+      'L1-02': { id: 'L1-02', name: 'Bay 02', floor: 'L1', status: 'VACANT', plate: null, start: null, carColor: 'blue', threshold: 10.0, sensorHealth: 'HEALTHY' },
+      'L1-03': { id: 'L1-03', name: 'Bay 03', floor: 'L1', status: 'OCCUPIED', plate: 'UP 16 BZ 9022', start: Date.now() - 210000, carColor: 'ruby', threshold: 10.0, sensorHealth: 'HEALTHY' }
     }
   },
   L2: {
     id: 'L2',
     name: 'Level 2 (Rooftop Deck)',
     slots: {
-      'L2-01': { id: 'L2-01', name: 'Bay 01', floor: 'L2', status: 'VACANT', plate: null, start: null, carColor: 'amber' },
-      'L2-02': { id: 'L2-02', name: 'Bay 02', floor: 'L2', status: 'VACANT', plate: null, start: null, carColor: 'ruby' },
-      'L2-03': { id: 'L2-03', name: 'Bay 03', floor: 'L2', status: 'OCCUPIED', plate: 'CH 01 BG 5543', start: Date.now() - 580000, carColor: 'violet' }
+      'L2-01': { id: 'L2-01', name: 'Bay 01', floor: 'L2', status: 'VACANT', plate: null, start: null, carColor: 'amber', threshold: 10.0, sensorHealth: 'HEALTHY' },
+      'L2-02': { id: 'L2-02', name: 'Bay 02', floor: 'L2', status: 'VACANT', plate: null, start: null, carColor: 'ruby', threshold: 10.0, sensorHealth: 'HEALTHY' },
+      'L2-03': { id: 'L2-03', name: 'Bay 03', floor: 'L2', status: 'OCCUPIED', plate: 'CH 01 BG 5543', start: Date.now() - 580000, carColor: 'violet', threshold: 10.0, sensorHealth: 'HEALTHY' }
     }
   }
 };

@@ -1,0 +1,10 @@
+CompileFlags:
+  Add:
+    - -xc++
+    - -std=c++14
+    - -Wno-everything
+
+If:
+  PathMatch: .*\.ino
+Diagnostics:
+  Suppress: ["*"]

@@ -171,6 +171,10 @@ export function FloorSimulator({
             <span className="w-3.5 h-3.5 rounded border-2 border-rose-500 bg-rose-100" />
             🔴 RED = Occupied
           </span>
+          <span className="flex items-center gap-1.5 text-amber-800">
+            <span className="w-3.5 h-3.5 rounded border-2 border-amber-500 bg-amber-100" />
+            ⚠️ AMBER = Sensor Fault
+          </span>
           <span className="flex items-center gap-1.5 text-blue-800">
             <span className="w-3.5 h-3.5 rounded border-2 border-blue-600 bg-blue-100" />
             🔵 BLUE = Your Car
@@ -223,18 +227,20 @@ export function FloorSimulator({
 }
 
 function SlotCard({ slot, floorId, userBooking, onClick }) {
-  const isOccupied = slot.status === 'OCCUPIED';
+  const isFault = slot.status === 'SENSOR_ERROR' || slot.sensorHealth === 'FAULT';
+  const isOccupied = !isFault && slot.status === 'OCCUPIED';
   const isUserSpot = userBooking?.active && userBooking.floor === floorId && userBooking.slotId === slot.id;
 
   let cardClasses = 'top-slot-card ';
-  if (isUserSpot) cardClasses += 'user-spot';
+  if (isFault) cardClasses += 'no_reading border-2 border-amber-500/80 bg-amber-950/30 ';
+  else if (isUserSpot) cardClasses += 'user-spot';
   else if (isOccupied) cardClasses += 'occupied';
   else cardClasses += 'vacant';
 
   const carColor = isUserSpot ? 'blue' : (slot.carColor || 'ruby');
 
   return (
-    <div className={cardClasses} onClick={onClick}>
+    <div className={cardClasses} onClick={isFault ? undefined : onClick}>
       {/* Top Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
@@ -247,7 +253,11 @@ function SlotCard({ slot, floorId, userBooking, onClick }) {
           )}
         </div>
 
-        {isUserSpot ? (
+        {isFault ? (
+          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-900/80 text-amber-300 border border-amber-500/60 animate-pulse">
+            ⚠️ SENSOR FAULT
+          </span>
+        ) : isUserSpot ? (
           <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-600 text-white shadow-sm">
             ⭐ YOUR CAR
           </span>
@@ -264,7 +274,17 @@ function SlotCard({ slot, floorId, userBooking, onClick }) {
 
       {/* Center Body Visual */}
       <div className="my-auto py-2">
-        {isOccupied ? (
+        {isFault ? (
+          <div className="flex flex-col items-center justify-center text-center py-4 text-amber-400">
+            <div className="w-10 h-10 rounded-full bg-amber-950/80 border-2 border-amber-500 flex items-center justify-center text-amber-400 mb-2">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <span className="text-xs font-black text-amber-300 tracking-wide uppercase">
+              SENSOR OFFLINE
+            </span>
+            <span className="text-[10px] font-semibold text-slate-400">Readings Paused</span>
+          </div>
+        ) : isOccupied ? (
           <CarSvg colorScheme={carColor} isUserCar={isUserSpot} />
         ) : (
           <div className="flex flex-col items-center justify-center text-center py-4">
@@ -281,7 +301,14 @@ function SlotCard({ slot, floorId, userBooking, onClick }) {
 
       {/* Footer Tag */}
       <div className="pt-2 border-t border-slate-700/60 flex items-center justify-between text-xs">
-        {isUserSpot ? (
+        {isFault ? (
+          <>
+            <span className="font-mono text-amber-400 font-bold text-[10px]">CHECK SENSOR</span>
+            <span className="text-slate-400 font-mono text-[10px]">
+              Thresh: {slot.threshold ? `${slot.threshold.toFixed(0)}cm` : '10cm'}
+            </span>
+          </>
+        ) : isUserSpot ? (
           <>
             <span className="font-mono font-bold text-blue-300">{slot.plate}</span>
             <span className="text-rose-400 font-extrabold hover:underline">Leave Spot</span>
@@ -292,8 +319,11 @@ function SlotCard({ slot, floorId, userBooking, onClick }) {
             <span className="text-slate-400 font-mono text-[10px]">Active</span>
           </>
         ) : (
-          <div className="w-full text-center text-emerald-400/80 font-bold text-[11px]">
-            Ready to Reserve
+          <div className="w-full flex items-center justify-between text-emerald-400/80 font-bold text-[11px]">
+            <span>Ready to Reserve</span>
+            <span className="text-slate-500 font-mono text-[10px]">
+              Thresh: {slot.threshold ? `${slot.threshold.toFixed(0)}cm` : '10cm'}
+            </span>
           </div>
         )}
       </div>

@@ -17,11 +17,13 @@ export function HourlyDisplayCard({
   statusSince,
   billingRate = 30.0,
   distance = 18.0,
+  sensorHealth = 'HEALTHY',
   availableSpaces = 2,
   totalSpaces = 3,
   onSimulateAdvanceHour
 }) {
-  const isOccupied = status === 'OCCUPIED';
+  const isFault = status === 'SENSOR_ERROR' || sensorHealth === 'FAULT';
+  const isOccupied = !isFault && status === 'OCCUPIED';
 
   // Track elapsed parking time
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -110,15 +112,16 @@ export function HourlyDisplayCard({
   let lcdLine1 = 'PARKSENSE: OPEN ';
   let lcdLine2 = `SPOTS AVAIL: ${availableSpaces}/${totalSpaces} `.slice(0, 16).padEnd(16, ' ');
 
-  if (availableSpaces === 0 && !isOccupied) {
+  if (isFault) {
+    lcdLine1 = 'SENSOR FAULT!   ';
+    lcdLine2 = 'CHECK SENSOR/VCC';
+  } else if (availableSpaces === 0 && !isOccupied) {
     lcdLine1 = 'PARKSENSE: FULL ';
     lcdLine2 = 'NO SPOTS AVAIL  ';
   } else if (!isOccupied && displayToggle === 1) {
     lcdLine1 = `FREE SPOTS: ${availableSpaces} OF ${totalSpaces}`.slice(0, 16).padEnd(16, ' ');
     lcdLine2 = `BAY 01: Rs.${billingRate.toFixed(0)}/Hr`.slice(0, 16).padEnd(16, ' ');
-  }
-
-  if (isOccupied) {
+  } else if (isOccupied) {
     if (hourlyAlert) {
       lcdLine1 = `** ${hourlyAlert.hour} HR REACHED **`.slice(0, 16).padEnd(16, ' ');
       lcdLine2 = `Fee: Rs.${hourlyAlert.fee.toFixed(0)}/hr  `.slice(0, 16);

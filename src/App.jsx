@@ -14,6 +14,8 @@ import { BookingModal } from './components/BookingModal';
 import { ReceiptModal } from './components/ReceiptModal';
 import { ArduinoGuideModal } from './components/ArduinoGuideModal';
 import { TerminalDrawer } from './components/TerminalDrawer';
+import { SensorHealthCard } from './components/SensorHealthCard';
+import { ResponseTimeSection } from './components/ResponseTimeSection';
 import { useWebSerial } from './hooks/useWebSerial';
 import { useAudioVoice } from './hooks/useAudioVoice';
 import { INITIAL_FLOORS, getRandomPlate } from './data/constants';
@@ -21,7 +23,10 @@ import { PARKING_FACILITIES } from './data/facilitiesData';
 import { 
   fetchAllVehicleRecords, 
   insertVehicleRecord, 
-  logSystemEvent 
+  logSystemEvent,
+  fetchResponseTimeMetrics,
+  insertResponseTimeMetric,
+  clearResponseTimeMetrics
 } from './services/supabaseClient';
 
 export default function App() {
@@ -34,6 +39,12 @@ export default function App() {
   const [status, setStatus] = useState('VACANT');
   const [statusSince, setStatusSince] = useState(Date.now());
   const [statusDuration, setStatusDuration] = useState('00:00:00');
+
+  // Sensor Health & Research Telemetry State
+  const [sensorHealth, setSensorHealth] = useState('HEALTHY'); // 'HEALTHY', 'FAULT', 'OFFLINE'
+  const [isSimFault, setIsSimFault] = useState(false);
+  const [responseTimeMetrics, setResponseTimeMetrics] = useState(() => fetchResponseTimeMetrics());
+  const eventStartTimeRef = useRef(null);
 
   // Billing & Revenue State
   const [billingRate, setBillingRate] = useState(30.0); // ₹30/hr standard rate
@@ -66,7 +77,8 @@ export default function App() {
   const [terminalLines, setTerminalLines] = useState([
     { time: new Date().toLocaleTimeString(), text: 'ParkSense IoT Full Ecosystem Active.', type: 'system' },
     { time: new Date().toLocaleTimeString(), text: 'Supabase Real-Time Database Client Initialized.', type: 'system' },
-    { time: new Date().toLocaleTimeString(), text: 'C++ Arduino Firmware (parking_sensor.ino) compatible at 9600 baud.', type: 'system' }
+    { time: new Date().toLocaleTimeString(), text: 'C++ Arduino Firmware (parking_sensor.ino) compatible at 9600 baud.', type: 'system' },
+    { time: new Date().toLocaleTimeString(), text: 'Research Modules Active: Configurable Thresholds, Sensor Fault Detection & Response-Time Logging.', type: 'system' }
   ]);
   const [showTerminal, setShowTerminal] = useState(false);
   const [autoScrollTerminal, setAutoScrollTerminal] = useState(true);
@@ -127,12 +139,36 @@ export default function App() {
   });
 
   // Calculate live vacancies across all 3 floors for facility map synchronization
+  // Ensure that any sensor error/fault is NEVER counted as vacant/free
   const totalSpotsAcrossFloors = Object.values(floors).reduce(
     (acc, f) => acc + Object.keys(f.slots).length, 0
   );
   const vacantSpotsAcrossFloors = Object.values(floors).reduce(
-    (acc, f) => acc + Object.values(f.slots).filter(s => s.status === 'VACANT').length, 0
+    (acc, f) => acc + Object.values(f.slots).filter(s => s.status === 'VACANT' && s.sensorHealth !== 'FAULT' && s.status !== 'SENSOR_ERROR').length, 0
   );
+
+  // Export Latency Benchmarks to CSV
+  const handleExportBenchmarksCsv = () => {
+    if (!responseTimeMetrics || responseTimeMetrics.length === 0) return;
+    const headers = ['Metric ID', 'Source', 'Event Type', 'Sensor to UI (ms)', 'UI to DB (ms)', 'Total Response Time (ms)', 'Timestamp'];
+    const rows = responseTimeMetrics.map(m => [
+      m.id,
+      m.source,
+      m.eventType,
+      m.detectionToUiMs,
+      m.uiToDbMs,
+      m.totalMs,
+      m.timestamp
+    ]);
+    const csvContent = [headers.join(','), ...rows.map(r => r.map(c => `"${c}"`).join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `ParkSense_Response_Time_Benchmarks_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   // Calculate fees helper
   const calculateFee = useCallback((startMs) => {
@@ -195,9 +231,51 @@ export default function App() {
     let lineType = 'normal';
     if (line.includes('OCCUPIED')) lineType = 'occupied';
     else if (line.includes('VACANT')) lineType = 'vacant';
+    else if (line.includes('SENSOR_ERROR') || line.includes('FAULT')) lineType = 'error';
     else if (line.includes('[CMD]')) lineType = 'cmd';
 
     logTerminal(line, lineType);
+
+    // 0. Sensor Health match: "Sensor Health: HEALTHY / FAULT"
+    const healthMatch = line.match(/^Sensor Health:\s*(.*)/i);
+    if (healthMatch) {
+      const hStr = healthMatch[1].trim().toUpperCase();
+      if (hStr.includes('FAULT')) {
+        setSensorHealth('FAULT');
+      } else {
+        setSensorHealth('HEALTHY');
+      }
+      return;
+    }
+
+    // 0.1 Configurable Threshold match: "Threshold: X.X cm"
+    const threshMatch = line.match(/^Threshold:\s*([\d.]+)\s*cm/i);
+    if (threshMatch) {
+      const tVal = parseFloat(threshMatch[1]);
+      setFloors(prev => {
+        if (prev.L1?.slots['L1-01'] && prev.L1.slots['L1-01'].threshold !== tVal) {
+          return {
+            ...prev,
+            L1: {
+              ...prev.L1,
+              slots: {
+                ...prev.L1.slots,
+                'L1-01': { ...prev.L1.slots['L1-01'], threshold: tVal }
+              }
+            }
+          };
+        }
+        return prev;
+      });
+      return;
+    }
+
+    // 0.2 Detection Hardware Timestamp match: "DetectTimestampMs: 12345"
+    const detectMatch = line.match(/^DetectTimestampMs:\s*(\d+)/i);
+    if (detectMatch) {
+      eventStartTimeRef.current = performance.now();
+      return;
+    }
 
     // 1. Distance match: "Distance: X.X cm"
     const distMatch = line.match(/^Distance:\s*([\d.]+)\s*cm/i);
@@ -210,22 +288,53 @@ export default function App() {
     // 2. Status match: "Parking Status: ..."
     const statusMatch = line.match(/^Parking Status:\s*(.*)/i);
     if (statusMatch) {
-      const newStatus = statusMatch[1].trim().toUpperCase();
-      handleStatusChange(newStatus);
+      const rawStatus = statusMatch[1].trim().toUpperCase();
+      const newStatus = rawStatus.includes('OCCUPIED') 
+        ? 'OCCUPIED' 
+        : rawStatus.includes('ERROR') 
+        ? 'SENSOR_ERROR' 
+        : 'VACANT';
+      handleStatusChange(newStatus, isSimulating ? 'SIMULATION' : 'HARDWARE');
     }
-  }, [logTerminal]);
+  }, [logTerminal, isSimulating]);
 
-  // Handle status transitions
-  const handleStatusChange = useCallback((newStatus) => {
+  // Handle status transitions with response time logging
+  const handleStatusChange = useCallback((newStatus, source = 'HARDWARE') => {
+    // 1. SENSOR ERROR / FAULT CASE
+    if (newStatus === 'SENSOR_ERROR') {
+      setStatus('SENSOR_ERROR');
+      setSensorHealth('FAULT');
+      setStatusSince(Date.now());
+      setFloors(prevFloors => {
+        const updated = { ...prevFloors };
+        if (updated.L1 && updated.L1.slots['L1-01']) {
+          updated.L1.slots['L1-01'] = {
+            ...updated.L1.slots['L1-01'],
+            status: 'SENSOR_ERROR',
+            sensorHealth: 'FAULT'
+          };
+        }
+        return updated;
+      });
+      logTerminal('[Diagnostics] SENSOR FAULT DETECTED: Ultrasonic sensor offline, timeout, or abnormal reading. Parking updates paused.', 'cmd');
+      return;
+    }
+
     setStatus(prevStatus => {
       if (prevStatus === newStatus) return prevStatus;
 
+      // Start timing actual response latency
+      const tStart = eventStartTimeRef.current || performance.now();
+      eventStartTimeRef.current = null;
+
       setStatusSince(Date.now());
+      setSensorHealth('HEALTHY');
 
       if (newStatus === 'OCCUPIED') {
         playChime('occupied');
         speakAlert('arrival');
-        setActiveParkStart(Date.now());
+        const startTimestamp = Date.now();
+        setActiveParkStart(startTimestamp);
 
         // Sync with Hardware Slot L1-01
         setFloors(prevFloors => {
@@ -234,20 +343,49 @@ export default function App() {
             updated.L1.slots['L1-01'] = {
               ...updated.L1.slots['L1-01'],
               status: 'OCCUPIED',
+              sensorHealth: 'HEALTHY',
               plate: currentPlate,
-              start: Date.now()
+              start: startTimestamp
             };
           }
           return updated;
         });
 
+        // Measure UI commit time and database write time
+        const tUiDone = performance.now();
+        const detectionToUiMs = Math.max(0.1, tUiDone - tStart);
+
+        logSystemEvent('OCCUPIED', `Vehicle ${currentPlate} parked in Bay L1-01 (${source})`, { source })
+          .finally(() => {
+            const tDbDone = performance.now();
+            const uiToDbMs = Math.max(0.1, tDbDone - tUiDone);
+            const totalMs = detectionToUiMs + uiToDbMs;
+
+            const metric = {
+              id: `bm-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+              source, // 'HARDWARE' or 'SIMULATION'
+              eventType: 'VEHICLE_ARRIVED',
+              detectionToUiMs: parseFloat(detectionToUiMs.toFixed(2)),
+              uiToDbMs: parseFloat(uiToDbMs.toFixed(2)),
+              totalMs: parseFloat(totalMs.toFixed(2)),
+              timestamp: new Date().toISOString()
+            };
+
+            insertResponseTimeMetric(metric).then(updatedMetrics => {
+              if (updatedMetrics) setResponseTimeMetrics(updatedMetrics);
+            });
+
+            logTerminal(`[Response Time Benchmark] [${source}] Vehicle Arrived: Total ${totalMs.toFixed(1)}ms (Sensor-to-UI: ${detectionToUiMs.toFixed(1)}ms | UI-to-DB: ${uiToDbMs.toFixed(1)}ms)`, 'system');
+          });
+
       } else if (newStatus === 'VACANT') {
         playChime('vacant');
         speakAlert('departure');
 
+        const sessionStart = activeParkStart;
+
         // Complete billing for L1-01 if active
-        if (activeParkStart) {
-          completeSession('Bay L1-01 (IoT Sensor)', currentPlate, activeParkStart);
+        if (sessionStart) {
           setActiveParkStart(null);
           setRunningFare(0.0);
           setCurrentPlate(getRandomPlate());
@@ -260,16 +398,47 @@ export default function App() {
             updated.L1.slots['L1-01'] = {
               ...updated.L1.slots['L1-01'],
               status: 'VACANT',
+              sensorHealth: 'HEALTHY',
               start: null
             };
           }
           return updated;
         });
+
+        // Measure UI commit time and database write time
+        const tUiDone = performance.now();
+        const detectionToUiMs = Math.max(0.1, tUiDone - tStart);
+
+        const dbAction = sessionStart 
+          ? completeSession('Bay L1-01 (IoT Sensor)', currentPlate, sessionStart)
+          : logSystemEvent('VACANT', `Bay L1-01 is clear (${source})`, { source });
+
+        Promise.resolve(dbAction).finally(() => {
+          const tDbDone = performance.now();
+          const uiToDbMs = Math.max(0.1, tDbDone - tUiDone);
+          const totalMs = detectionToUiMs + uiToDbMs;
+
+          const metric = {
+            id: `bm-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+            source, // 'HARDWARE' or 'SIMULATION'
+            eventType: 'VEHICLE_DEPARTED',
+            detectionToUiMs: parseFloat(detectionToUiMs.toFixed(2)),
+            uiToDbMs: parseFloat(uiToDbMs.toFixed(2)),
+            totalMs: parseFloat(totalMs.toFixed(2)),
+            timestamp: new Date().toISOString()
+          };
+
+          insertResponseTimeMetric(metric).then(updatedMetrics => {
+            if (updatedMetrics) setResponseTimeMetrics(updatedMetrics);
+          });
+
+          logTerminal(`[Response Time Benchmark] [${source}] Vehicle Departed: Total ${totalMs.toFixed(1)}ms (Sensor-to-UI: ${detectionToUiMs.toFixed(1)}ms | UI-to-DB: ${uiToDbMs.toFixed(1)}ms)`, 'system');
+        });
       }
 
       return newStatus;
     });
-  }, [playChime, speakAlert, currentPlate, activeParkStart, completeSession]);
+  }, [playChime, speakAlert, currentPlate, activeParkStart, completeSession, logTerminal]);
 
   // Second Ticker for duration and live fare
   useEffect(() => {
@@ -300,18 +469,71 @@ export default function App() {
     return () => clearInterval(timer);
   }, [statusSince, status, activeParkStart, calculateFee, userBooking]);
 
-  // Demo Simulation Functions
+  // Demo Simulation Functions with Configurable Threshold and Fault Testing
   const emitSimPacket = useCallback((targetDist) => {
+    if (isSimFault) {
+      handleSerialLine('Distance: ERR cm');
+      handleSerialLine('Sensor Health: FAULT (SIMULATED)');
+      handleSerialLine('Parking Status: SENSOR_ERROR');
+      return;
+    }
+
+    const bayThresh = floors.L1?.slots['L1-01']?.threshold || 10.0;
     const jitter = (Math.random() - 0.5) * 0.3;
     const actualDist = Math.max(2.0, Math.min(35.0, targetDist + jitter));
 
+    eventStartTimeRef.current = performance.now();
+
     handleSerialLine(`Distance: ${actualDist.toFixed(1)} cm`);
-    if (actualDist < 10.0) {
+    handleSerialLine(`Threshold: ${bayThresh.toFixed(1)} cm`);
+    handleSerialLine('Sensor Health: HEALTHY');
+
+    if (actualDist < bayThresh) {
       handleSerialLine('Parking Status: OCCUPIED');
     } else {
       handleSerialLine('Parking Status: VACANT');
     }
-  }, [handleSerialLine]);
+  }, [handleSerialLine, isSimFault, floors]);
+
+  const toggleSimFault = useCallback(() => {
+    setIsSimFault(prev => {
+      const next = !prev;
+      if (next) {
+        logTerminal('[Diagnostics] Simulated sensor fault/disconnection activated.', 'cmd');
+        setSensorHealth('FAULT');
+        setStatus('SENSOR_ERROR');
+        setStatusSince(Date.now());
+        setFloors(prevFloors => {
+          const u = { ...prevFloors };
+          if (u.L1 && u.L1.slots['L1-01']) {
+            u.L1.slots['L1-01'] = {
+              ...u.L1.slots['L1-01'],
+              status: 'SENSOR_ERROR',
+              sensorHealth: 'FAULT'
+            };
+          }
+          return u;
+        });
+      } else {
+        logTerminal('[Diagnostics] Simulated sensor fault cleared. Normal sensor telemetry restored.', 'system');
+        setSensorHealth('HEALTHY');
+        setStatus('VACANT');
+        setStatusSince(Date.now());
+        setFloors(prevFloors => {
+          const u = { ...prevFloors };
+          if (u.L1 && u.L1.slots['L1-01']) {
+            u.L1.slots['L1-01'] = {
+              ...u.L1.slots['L1-01'],
+              status: 'VACANT',
+              sensorHealth: 'HEALTHY'
+            };
+          }
+          return u;
+        });
+      }
+      return next;
+    });
+  }, [logTerminal]);
 
   const toggleSimulation = () => {
     if (isSimulating) {
@@ -325,7 +547,7 @@ export default function App() {
     } else {
       if (isConnected) disconnectSerial();
       setIsSimulating(true);
-      logTerminal('[Simulator] Demo simulation started. Use distance slider or auto cycle.', 'system');
+      logTerminal('[Simulator] Demo simulation started. Use distance buttons or auto cycle.', 'system');
       emitSimPacket(18.0);
     }
   };
@@ -339,7 +561,8 @@ export default function App() {
     } else {
       setIsAutoCycle(true);
       logTerminal('[Simulator] Auto traffic cycle running...', 'system');
-      const scenario = [25.0, 20.0, 15.0, 9.5, 6.0, 4.8, 5.0, 5.2, 8.0, 14.0, 22.0, 28.0];
+      const bayThresh = floors.L1?.slots['L1-01']?.threshold || 10.0;
+      const scenario = [bayThresh + 15, bayThresh + 8, bayThresh + 2, bayThresh - 2, bayThresh - 5, bayThresh - 4, bayThresh + 6, bayThresh + 12];
       let idx = 0;
       autoCycleRef.current = setInterval(() => {
         const d = scenario[idx];
@@ -378,6 +601,12 @@ export default function App() {
     if (!floor) return;
     const slot = floor.slots[slotId];
     if (!slot) return;
+
+    if (slot.status === 'SENSOR_ERROR' || slot.sensorHealth === 'FAULT') {
+      alert(`⚠️ Cannot park in ${slot.name}: SENSOR ERROR/OFFLINE. Bay is disabled until sensor health is restored.`);
+      logTerminal(`[Safety] Attempted to park in ${slot.name}, but sensor is in FAULT/ERROR state. Operation blocked.`, 'cmd');
+      return;
+    }
 
     if (userBooking.active && userBooking.floor === floorId && userBooking.slotId === slotId) {
       if (window.confirm(`Vacate spot ${slot.name} and generate receipt?`)) {
@@ -525,7 +754,7 @@ export default function App() {
     }
   };
 
-  // Admin slot modeling update
+  // Admin slot modeling update with configurable bay threshold support
   const handleUpdateFloorSlot = (floorId, slotId, updates) => {
     setFloors(prev => {
       const u = { ...prev };
@@ -534,8 +763,22 @@ export default function App() {
       }
       return u;
     });
-    logTerminal(`[Admin] Updated ${slotId} on ${floorId} to ${updates.status || 'modified'}.`, 'system');
+
+    if (updates.threshold !== undefined) {
+      logTerminal(`[Threshold Config] Updated ${slotId} on ${floorId} to ${parseFloat(updates.threshold).toFixed(1)} cm.`, 'system');
+      if (slotId === 'L1-01' && isConnected) {
+        sendCommand(`H:${parseFloat(updates.threshold).toFixed(1)}\n`);
+      }
+    } else {
+      logTerminal(`[Admin] Updated ${slotId} on ${floorId} to ${updates.status || 'modified'}.`, 'system');
+    }
   };
+
+  const handleClearResponseMetrics = useCallback(() => {
+    clearResponseTimeMetrics();
+    setResponseTimeMetrics([]);
+    logTerminal('[Research Benchmarks] Response-time latency dataset reset.', 'system');
+  }, [logTerminal]);
 
   // Export audit table to CSV
   const handleExportCsv = () => {
@@ -595,6 +838,8 @@ export default function App() {
           onCarLeaves={() => emitSimPacket(22.0)}
           isAutoCycle={isAutoCycle}
           onToggleAutoCycle={toggleAutoCycle}
+          isSimFault={isSimFault}
+          onToggleSimFault={toggleSimFault}
         />
       )}
 
@@ -610,6 +855,8 @@ export default function App() {
         onRandomizePlate={() => setCurrentPlate(getRandomPlate())}
         totalSessionRevenue={totalRevenue}
         slots={Object.values(floors[selectedFloor]?.slots || {})}
+        sensorHealth={sensorHealth}
+        threshold={floors.L1?.slots['L1-01']?.threshold || 10.0}
       />
 
       {/* PORTAL VIEW 1: 2D Floor Architecture, Hardware Actuation & IoT Bay Simulator */}
@@ -621,6 +868,7 @@ export default function App() {
             statusSince={statusSince}
             billingRate={billingRate}
             distance={distance}
+            sensorHealth={sensorHealth}
             availableSpaces={
               Object.values(floors[selectedFloor]?.slots || {}).filter(s => s.status === 'VACANT').length
             }
@@ -654,6 +902,23 @@ export default function App() {
             onCancelUserBooking={handleCancelUserBooking}
             onSlotClick={handleSlotClick}
             onQuickPark={handleQuickPark}
+          />
+
+          {/* Visible Sensor Health & Fault Detection Section (Bay 01, Bay 02, Bay 03) */}
+          <SensorHealthCard
+            floors={floors}
+            selectedFloor={selectedFloor}
+            sensorHealth={sensorHealth}
+            distance={distance}
+            isSimFault={isSimFault}
+            onToggleSimFault={toggleSimFault}
+          />
+
+          {/* Visible Response Time Logging Section */}
+          <ResponseTimeSection
+            metrics={responseTimeMetrics}
+            onClearMetrics={handleClearResponseMetrics}
+            onExportCsv={handleExportBenchmarksCsv}
           />
         </>
       )}
@@ -714,6 +979,10 @@ export default function App() {
             onSendCommand={sendCommand}
             billingRate={billingRate}
             onChangeBillingRate={setBillingRate}
+            sensorHealth={sensorHealth}
+            responseTimeMetrics={responseTimeMetrics}
+            onClearResponseMetrics={handleClearResponseMetrics}
+            activeHardwareThreshold={floors.L1?.slots['L1-01']?.threshold || 10.0}
           />
         </div>
       )}

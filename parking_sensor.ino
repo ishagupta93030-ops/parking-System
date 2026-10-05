@@ -72,11 +72,19 @@ const uint8_t RED_LED_PIN    = 7;
 const uint8_t GREEN_LED_PIN  = 8;
 const uint8_t SERVO_PIN      = 11;
 
-// Parking Detection Constants
-const float OCCUPIED_THRESHOLD_CM = 10.0; // Distance < 10.0 cm = Vehicle Parked
+// Parking Detection Configuration & Research Variables
+float occupiedThresholdCm         = 10.0; // Configurable: Distance < occupiedThresholdCm = Vehicle Parked
 const float MAX_RELIABLE_DIST_CM  = 250.0; // HC-SR04 optimal ceiling
 const unsigned long SENSOR_TIMEOUT_US = 25000; // 25ms timeout (~4.2 meters max)
 const float HOURLY_RATE_INR       = 30.0; // Standard rate: ₹30/hour
+
+// Sensor Health & Fault Tracking
+bool sensorFault                  = false;
+uint8_t consecutiveTimeouts       = 0;
+const uint8_t MAX_FAULT_TIMEOUTS  = 4; // 4 consecutive missed echo pulses = sensor fault / disconnected
+
+// Research Response Time Tracking
+unsigned long lastEventDetectTime = 0; // Milliseconds timestamp when state change was detected
 
 // State Variables
 const uint8_t TOTAL_BAYS    = 3;   // Total parking spaces
@@ -115,8 +123,13 @@ void renderDisplay(unsigned long now) {
   char row0[17];
   char row1[17];
 
+  // 0. Sensor Fault State Banner
+  if (sensorFault) {
+    snprintf(row0, sizeof(row0), "SENSOR FAULT!   ");
+    snprintf(row1, sizeof(row1), "CHECK SENSOR/VCC");
+  }
   // 1. Vehicle just departed summary banner
-  if (now < sessionDepartureUntil) {
+  else if (now < sessionDepartureUntil) {
     snprintf(row0, sizeof(row0), "PAID & DEPARTED ");
     snprintf(row1, sizeof(row1), "%uh%um Tot:Rs.%u", lastSessionHours, lastSessionMins, (unsigned int)lastSessionTotalFee);
   }
@@ -200,13 +213,16 @@ void setup() {
 
   Serial.println(F("========================================="));
   Serial.println(F("ParkSense IoT C++ Firmware v3.0 Ready"));
-  Serial.println(F("Baud: 9600 | Threshold: 10.0 cm"));
+  Serial.print(F("Baud: 9600 | Configurable Threshold: "));
+  Serial.print(occupiedThresholdCm, 1);
+  Serial.println(F(" cm"));
+  Serial.println(F("Sensor Fault Diagnostics: ACTIVE"));
   Serial.println(F("I2C 16x2 LCD: ENABLED | Hourly Display: ACTIVE"));
   Serial.println(F("========================================="));
 }
 
 // ============================================================================
-// ULTRASONIC SENSOR MEASUREMENT (Filtered)
+// ULTRASONIC SENSOR MEASUREMENT (Filtered with Fault Detection)
 // ============================================================================
 float readUltrasonicDistance() {
   // Clear trigger
@@ -222,12 +238,31 @@ float readUltrasonicDistance() {
   unsigned long echoTime = pulseIn(ECHO_PIN, HIGH, SENSOR_TIMEOUT_US);
 
   if (echoTime == 0) {
-    // No bounce back detected within range (Slot is open / clear space)
-    return 100.0; // Return safe clear distance (> threshold)
+    // Sensor pulse failed to return (timeout, disconnected, or blocked)
+    consecutiveTimeouts++;
+    if (consecutiveTimeouts >= MAX_FAULT_TIMEOUTS) {
+      sensorFault = true;
+      return -1.0; // Definite sensor fault indicator
+    }
+    // Transient timeout in wide-open clear space
+    return 100.0;
   }
 
   // Calculate distance in cm: Speed of sound = 0.0343 cm/µs
   float dist = (float)echoTime * 0.0343 / 2.0;
+
+  // Abnormal out-of-range sensor detection (< 1.5 cm is below HC-SR04 physical blind zone)
+  if (dist < 1.5) {
+    consecutiveTimeouts++;
+    if (consecutiveTimeouts >= MAX_FAULT_TIMEOUTS) {
+      sensorFault = true;
+      return -1.0;
+    }
+  } else {
+    // Valid reading restores healthy sensor state
+    consecutiveTimeouts = 0;
+    sensorFault = false;
+  }
 
   // Clamp within realistic limits
   if (dist < 2.0) dist = 2.0;
@@ -291,6 +326,24 @@ void processSerialCommands() {
         Serial.println(F("[CMD] LED Diagnostic Cycle Complete"));
         break;
 
+      case 'H':
+      case 'h':
+        // Configurable Detection Threshold command: "H:12.5" or "H 15.0"
+        {
+          float newThresh = Serial.parseFloat();
+          if (newThresh >= 2.0 && newThresh <= 200.0) {
+            occupiedThresholdCm = newThresh;
+            Serial.print(F("[CMD] Configured Detection Threshold: "));
+            Serial.print(occupiedThresholdCm, 1);
+            Serial.println(F(" cm"));
+          } else {
+            Serial.print(F("[CMD] Current Detection Threshold: "));
+            Serial.print(occupiedThresholdCm, 1);
+            Serial.println(F(" cm"));
+          }
+        }
+        break;
+
       case 'S':
       case 's':
         // Request instant telemetry print
@@ -316,8 +369,12 @@ void loop() {
   // 2. Sample ultrasonic sensor
   float measuredDist = readUltrasonicDistance();
 
-  // 3. Debounce State Evaluation (requires 2 consistent readings to eliminate noise)
-  if (measuredDist > 0.0 && measuredDist < OCCUPIED_THRESHOLD_CM) {
+  // 3. Debounce State Evaluation
+  if (sensorFault) {
+    // SENSOR FAULT DETECTED: Reset debounce counters, do NOT alter billing/occupied state
+    consecutiveOccupied = 0;
+    consecutiveVacant = 0;
+  } else if (measuredDist > 0.0 && measuredDist < occupiedThresholdCm) {
     consecutiveOccupied++;
     consecutiveVacant = 0;
     if (consecutiveOccupied >= 2) {
@@ -325,6 +382,7 @@ void loop() {
         isOccupied = true;
         parkStartTime = now;
         lastAlertedHour = 0;
+        lastEventDetectTime = now; // Research detection timestamp for latency logging
 
         #if USE_SERVO
           if (!manualOverride) barrierServo.write(90); // Open barrier for car
@@ -338,12 +396,13 @@ void loop() {
         #endif
       }
     }
-  } else {
+  } else if (measuredDist >= occupiedThresholdCm) {
     consecutiveVacant++;
     consecutiveOccupied = 0;
     if (consecutiveVacant >= 2) {
       if (isOccupied) {
         isOccupied = false;
+        lastEventDetectTime = now; // Research detection timestamp for latency logging
 
         // Calculate session summary
         unsigned long elapsedSec = (now - parkStartTime) / 1000;
@@ -362,7 +421,7 @@ void loop() {
   currentDistance = measuredDist;
 
   // 4. Hourly Milestone Notification Checker (Runs when vehicle is parked)
-  if (isOccupied) {
+  if (isOccupied && !sensorFault) {
     unsigned long elapsedSec = (now - parkStartTime) / 1000;
     unsigned int currentHours = elapsedSec / 3600;
 
@@ -394,41 +453,64 @@ void loop() {
   if (now - lastTelemetryTime >= TELEMETRY_INTERVAL_MS) {
     lastTelemetryTime = now;
 
-    Serial.print(F("Distance: "));
-    Serial.print(currentDistance, 1);
-    Serial.println(F(" cm"));
-
-    if (isOccupied) {
-      Serial.println(F("Parking Status: OCCUPIED"));
-
-      unsigned long elapsedSec = (now - parkStartTime) / 1000;
-      unsigned int h = elapsedSec / 3600;
-      unsigned int m = (elapsedSec % 3600) / 60;
-      unsigned int s = elapsedSec % 60;
-
-      Serial.print(F("Parked Time: "));
-      Serial.print(h); Serial.print(F("h "));
-      Serial.print(m); Serial.print(F("m "));
-      Serial.print(s); Serial.println(F("s"));
-
-      Serial.print(F("Hourly Fee: Rs. "));
-      Serial.println((h + 1) * (unsigned int)HOURLY_RATE_INR);
+    if (sensorFault) {
+      Serial.println(F("Distance: ERR cm"));
+      Serial.println(F("Parking Status: SENSOR_ERROR"));
+      Serial.println(F("Sensor Health: FAULT (TIMEOUT/DISCONNECTED)"));
 
       #if USE_LEDS
-        digitalWrite(RED_LED_PIN, HIGH);
-        digitalWrite(GREEN_LED_PIN, LOW);
+        // Alternating alert flash on LEDs during sensor fault
+        digitalWrite(RED_LED_PIN, (now / 250) % 2 == 0 ? HIGH : LOW);
+        digitalWrite(GREEN_LED_PIN, (now / 250) % 2 == 1 ? HIGH : LOW);
       #endif
     } else {
-      Serial.println(F("Parking Status: VACANT"));
+      Serial.print(F("Distance: "));
+      Serial.print(currentDistance, 1);
+      Serial.println(F(" cm"));
 
-      #if USE_LEDS
-        digitalWrite(RED_LED_PIN, LOW);
-        digitalWrite(GREEN_LED_PIN, HIGH);
-      #endif
+      Serial.print(F("Threshold: "));
+      Serial.print(occupiedThresholdCm, 1);
+      Serial.println(F(" cm"));
 
-      #if USE_BUZZER
-        digitalWrite(BUZZER_PIN, LOW);
-      #endif
+      Serial.println(F("Sensor Health: HEALTHY"));
+
+      if (lastEventDetectTime > 0) {
+        Serial.print(F("DetectTimestampMs: "));
+        Serial.println(lastEventDetectTime);
+      }
+
+      if (isOccupied) {
+        Serial.println(F("Parking Status: OCCUPIED"));
+
+        unsigned long elapsedSec = (now - parkStartTime) / 1000;
+        unsigned int h = elapsedSec / 3600;
+        unsigned int m = (elapsedSec % 3600) / 60;
+        unsigned int s = elapsedSec % 60;
+
+        Serial.print(F("Parked Time: "));
+        Serial.print(h); Serial.print(F("h "));
+        Serial.print(m); Serial.print(F("m "));
+        Serial.print(s); Serial.println(F("s"));
+
+        Serial.print(F("Hourly Fee: Rs. "));
+        Serial.println((h + 1) * (unsigned int)HOURLY_RATE_INR);
+
+        #if USE_LEDS
+          digitalWrite(RED_LED_PIN, HIGH);
+          digitalWrite(GREEN_LED_PIN, LOW);
+        #endif
+      } else {
+        Serial.println(F("Parking Status: VACANT"));
+
+        #if USE_LEDS
+          digitalWrite(RED_LED_PIN, LOW);
+          digitalWrite(GREEN_LED_PIN, HIGH);
+        #endif
+
+        #if USE_BUZZER
+          digitalWrite(BUZZER_PIN, LOW);
+        #endif
+      }
     }
 
     Serial.println(F("--------------------"));

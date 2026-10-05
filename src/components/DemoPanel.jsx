@@ -1,11 +1,13 @@
 import React from 'react';
-import { Car, ArrowRight, RefreshCw } from 'lucide-react';
+import { Car, ArrowRight, RefreshCw, AlertTriangle, ShieldCheck } from 'lucide-react';
 
 export function DemoPanel({
   onCarArrives,
   onCarLeaves,
   isAutoCycle,
-  onToggleAutoCycle
+  onToggleAutoCycle,
+  isSimFault = false,
+  onToggleSimFault
 }) {
   return (
     <div className="bg-amber-50/90 border-2 border-amber-300 rounded-2xl p-4 shadow-sm animate-in fade-in duration-200">
@@ -20,7 +22,7 @@ export function DemoPanel({
             </span>
           </div>
           <p className="text-xs text-slate-700 font-medium mt-1">
-            Simulate vehicle arrival and departure events in real-time without physical hardware:
+            Simulate vehicle arrival, departure, and sensor fault events in real-time:
           </p>
         </div>
 
@@ -28,7 +30,8 @@ export function DemoPanel({
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={onCarArrives}
-            className="px-3.5 py-2 rounded-xl text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 shadow-sm cursor-pointer flex items-center gap-1.5 transition-transform active:scale-95"
+            disabled={isSimFault}
+            className="px-3.5 py-2 rounded-xl text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:pointer-events-none shadow-sm cursor-pointer flex items-center gap-1.5 transition-transform active:scale-95"
           >
             <Car className="w-3.5 h-3.5" />
             <span>Simulate Car Arrival (Parked)</span>
@@ -36,7 +39,8 @@ export function DemoPanel({
 
           <button
             onClick={onCarLeaves}
-            className="px-3.5 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-sm cursor-pointer flex items-center gap-1.5 transition-transform active:scale-95"
+            disabled={isSimFault}
+            className="px-3.5 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:pointer-events-none shadow-sm cursor-pointer flex items-center gap-1.5 transition-transform active:scale-95"
           >
             <ArrowRight className="w-3.5 h-3.5" />
             <span>Simulate Car Departure (Vacant)</span>
@@ -44,7 +48,8 @@ export function DemoPanel({
 
           <button
             onClick={onToggleAutoCycle}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+            disabled={isSimFault}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold border disabled:opacity-40 disabled:pointer-events-none transition-all cursor-pointer flex items-center gap-1.5 ${
               isAutoCycle
                 ? 'bg-rose-500 text-white border-rose-600 shadow-sm'
                 : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-50'
@@ -52,6 +57,29 @@ export function DemoPanel({
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isAutoCycle ? 'animate-spin' : ''}`} />
             <span>{isAutoCycle ? 'Stop Traffic Cycle' : 'Auto Traffic Cycle'}</span>
+          </button>
+
+          {/* SENSOR FAULT SIMULATION TOGGLE */}
+          <button
+            onClick={onToggleSimFault}
+            className={`px-3.5 py-2 rounded-xl text-xs font-black border transition-all cursor-pointer flex items-center gap-1.5 shadow-sm active:scale-95 ${
+              isSimFault
+                ? 'bg-amber-600 text-white border-amber-700 animate-pulse'
+                : 'bg-amber-100/80 hover:bg-amber-200 text-amber-950 border-amber-300'
+            }`}
+            title="Simulate HC-SR04 ultrasonic sensor timeout / cable disconnection"
+          >
+            {isSimFault ? (
+              <>
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Clear Sensor Fault</span>
+              </>
+            ) : (
+              <>
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-800" />
+                <span>Simulate Sensor Fault</span>
+              </>
+            )}
           </button>
         </div>
       </div>

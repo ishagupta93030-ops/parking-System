@@ -184,3 +184,60 @@ export async function logSystemEvent(eventType, message, metadata = {}) {
     }
   }
 }
+
+// ----------------------------------------------------------------------------
+// Research Response-Time Benchmarks (Physical Hardware & Simulation)
+// ----------------------------------------------------------------------------
+
+export function fetchResponseTimeMetrics() {
+  try {
+    const raw = localStorage.getItem('parksense_benchmark_records');
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function insertResponseTimeMetric(metric) {
+  // Store in local benchmark cache
+  let records = fetchResponseTimeMetrics();
+  records = [metric, ...records.slice(0, 199)]; // Keep latest 200 records
+  localStorage.setItem('parksense_benchmark_records', JSON.stringify(records));
+
+  // Sync to Supabase cloud logs
+  const client = getSupabaseClient();
+  if (client) {
+    try {
+      // 1. Log to system_logs table
+      await client.from('system_logs').insert([
+        {
+          event_type: 'RESPONSE_TIME_BENCHMARK',
+          message: `${metric.source} detection response: ${metric.totalMs.toFixed(1)}ms (${metric.eventType})`,
+          metadata: metric
+        }
+      ]);
+
+      // 2. Also try sensor_benchmarks if table exists
+      await client.from('sensor_benchmarks').insert([
+        {
+          source: metric.source,
+          event_type: metric.eventType,
+          detection_to_ui_ms: metric.detectionToUiMs,
+          ui_to_db_ms: metric.uiToDbMs,
+          total_response_ms: metric.totalMs,
+          measured_at: metric.timestamp
+        }
+      ]);
+    } catch (e) {
+      // Silent fallback to local storage
+    }
+  }
+
+  return records;
+}
+
+export function clearResponseTimeMetrics() {
+  localStorage.removeItem('parksense_benchmark_records');
+  return [];
+}
+

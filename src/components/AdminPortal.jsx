@@ -21,7 +21,10 @@ import {
   Sparkles,
   Key,
   Copy,
-  ExternalLink
+  ExternalLink,
+  Activity,
+  Clock,
+  Zap
 } from 'lucide-react';
 import { 
   getSupabaseConfig, 
@@ -31,6 +34,9 @@ import {
   clearAllVehicleRecords,
   deleteVehicleRecord
 } from '../services/supabaseClient';
+import { SensorSettingsSection } from './SensorSettingsSection';
+import { SensorHealthCard } from './SensorHealthCard';
+import { ResponseTimeSection } from './ResponseTimeSection';
 
 export function AdminPortal({
   records,
@@ -43,11 +49,16 @@ export function AdminPortal({
   isConnected,
   onSendCommand,
   billingRate,
-  onChangeBillingRate
+  onChangeBillingRate,
+  sensorHealth = 'HEALTHY',
+  responseTimeMetrics = [],
+  onClearResponseMetrics,
+  activeHardwareThreshold = 10.0
 }) {
   const [activeTab, setActiveTab] = useState('database'); // 'database', 'modeling', 'hardware', 'supabase'
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [metricSourceFilter, setMetricSourceFilter] = useState('ALL'); // 'ALL', 'HARDWARE', 'SIMULATION'
 
   // Supabase Settings Form
   const [supabaseUrl, setSupabaseUrl] = useState('');
@@ -55,6 +66,29 @@ export function AdminPortal({
   const [testResult, setTestResult] = useState(null);
   const [isTesting, setIsTesting] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
+
+  // Export Latency Benchmarks to CSV
+  const handleExportBenchmarksCsv = () => {
+    if (!responseTimeMetrics || responseTimeMetrics.length === 0) return;
+    const headers = ['Metric ID', 'Source', 'Event Type', 'Sensor to UI (ms)', 'UI to DB (ms)', 'Total Response Time (ms)', 'Timestamp'];
+    const rows = responseTimeMetrics.map(m => [
+      m.id,
+      m.source,
+      m.eventType,
+      m.detectionToUiMs,
+      m.uiToDbMs,
+      m.totalMs,
+      m.timestamp
+    ]);
+    const csvContent = [headers.join(','), ...rows.map(r => r.map(c => `"${c}"`).join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `ParkSense_Latency_Benchmarks_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   useEffect(() => {
     const config = getSupabaseConfig();
@@ -167,13 +201,24 @@ export function AdminPortal({
 
           <button
             type="button"
+            onClick={() => setActiveTab('sensor_settings')}
+            className={`px-3.5 py-2 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'sensor_settings' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Sensor Settings (Bays 1-3)</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab('hardware')}
             className={`px-3.5 py-2 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'hardware' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'
             }`}
           >
-            <Cpu className="w-3.5 h-3.5" />
-            <span>Hardware Diagnostics</span>
+            <Activity className="w-3.5 h-3.5" />
+            <span>Diagnostics & Benchmarks ({responseTimeMetrics.length})</span>
           </button>
 
           <button
@@ -224,12 +269,18 @@ export function AdminPortal({
 
         <div className="bg-slate-950/80 p-4 rounded-xl border border-slate-800 flex items-center justify-between">
           <div>
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Arduino Microcontroller</span>
-            <span className={`text-base font-black ${isConnected ? 'text-emerald-400' : 'text-slate-400'}`}>
-              {isConnected ? 'ONLINE (9600)' : 'STANDBY'}
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">IoT Sensor Health</span>
+            <span className={`text-base font-black ${
+              sensorHealth === 'FAULT' ? 'text-amber-400' : isConnected ? 'text-emerald-400' : 'text-slate-400'
+            }`}>
+              {sensorHealth === 'FAULT' ? '⚠️ SENSOR FAULT' : isConnected ? 'ONLINE (9600)' : 'STANDBY'}
             </span>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400">
+          <div className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
+            sensorHealth === 'FAULT' 
+              ? 'bg-amber-500/10 border-amber-500/40 text-amber-400' 
+              : 'bg-purple-500/10 border-purple-500/30 text-purple-400'
+          }`}>
             <Cpu className="w-5 h-5" />
           </div>
         </div>
@@ -376,28 +427,67 @@ export function AdminPortal({
                     <span className="text-[10px] text-slate-400 font-mono">{slots.length} Bays</span>
                   </div>
 
-                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
                     {slots.map(s => (
-                      <div key={s.id} className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between text-xs">
-                        <div>
-                          <strong className="text-white block font-mono">{s.name}</strong>
-                          <span className={`text-[10px] font-bold ${
-                            s.status === 'OCCUPIED' ? 'text-rose-400' : 'text-emerald-400'
-                          }`}>
-                            {s.status} {s.plate ? `(${s.plate})` : ''}
-                          </span>
+                      <div key={s.id} className="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-2 text-xs">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <strong className="text-white font-mono">{s.name}</strong>
+                              {s.isHardware && (
+                                <span className="text-[9px] font-mono font-bold text-cyan-300 bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-800 flex items-center gap-0.5">
+                                  <Zap className="w-2.5 h-2.5 text-cyan-400" />
+                                  IOT BAY
+                                </span>
+                              )}
+                            </div>
+                            <span className={`text-[10px] font-bold block mt-0.5 ${
+                              s.status === 'SENSOR_ERROR' 
+                                ? 'text-amber-400' 
+                                : s.status === 'OCCUPIED' 
+                                ? 'text-rose-400' 
+                                : 'text-emerald-400'
+                            }`}>
+                              {s.status === 'SENSOR_ERROR' ? '⚠️ SENSOR ERROR' : s.status} {s.plate ? `(${s.plate})` : ''}
+                            </span>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextStatus = s.status === 'OCCUPIED' ? 'VACANT' : 'OCCUPIED';
+                              onUpdateFloorSlot(floorId, s.id, { status: nextStatus, plate: nextStatus === 'OCCUPIED' ? 'ADMIN-OVERRIDE' : null });
+                            }}
+                            className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold cursor-pointer"
+                          >
+                            Toggle State
+                          </button>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const nextStatus = s.status === 'OCCUPIED' ? 'VACANT' : 'OCCUPIED';
-                            onUpdateFloorSlot(floorId, s.id, { status: nextStatus, plate: nextStatus === 'OCCUPIED' ? 'ADMIN-OVERRIDE' : null });
-                          }}
-                          className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold cursor-pointer"
-                        >
-                          Toggle State
-                        </button>
+                        {/* Configurable Bay Detection Threshold */}
+                        <div className="flex items-center justify-between pt-2 border-t border-slate-800/80 text-[11px]">
+                          <span className="text-slate-400 font-semibold flex items-center gap-1">
+                            <Sliders className="w-3 h-3 text-cyan-400" />
+                            Bay Detection Threshold:
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="2"
+                              max="150"
+                              step="0.5"
+                              value={s.threshold !== undefined ? s.threshold : 10.0}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val)) {
+                                  onUpdateFloorSlot(floorId, s.id, { threshold: val });
+                                }
+                              }}
+                              className="w-16 bg-slate-950 border border-slate-700 font-mono text-cyan-400 font-bold px-2 py-0.5 rounded outline-none text-right"
+                            />
+                            <span className="text-slate-500 font-mono text-[10px]">cm</span>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -408,16 +498,65 @@ export function AdminPortal({
         </div>
       )}
 
-      {/* TAB 3: HARDWARE DIAGNOSTICS & TELEMETRY */}
+      {/* TAB: SENSOR THRESHOLD SETTINGS (BAYS 1, 2, 3) */}
+      {activeTab === 'sensor_settings' && (
+        <div className="space-y-5 animate-in fade-in duration-200">
+          <SensorSettingsSection
+            floors={floors}
+            onUpdateFloorSlot={onUpdateFloorSlot}
+            selectedFloor="L1"
+            isConnected={isConnected}
+          />
+        </div>
+      )}
+
+      {/* TAB 3: HARDWARE DIAGNOSTICS & RESEARCH RESPONSE-TIME BENCHMARKS */}
       {activeTab === 'hardware' && (
-        <div className="space-y-4">
+        <div className="space-y-5">
+          {/* Live Sensor Health & Diagnostic Status */}
+          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-cyan-400" />
+                  Live Sensor Health & Diagnostic Status
+                </h4>
+                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border uppercase ${
+                  sensorHealth === 'FAULT'
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse'
+                    : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                }`}>
+                  {sensorHealth === 'FAULT' ? '⚠️ SENSOR FAULT DETECTED' : 'HEALTHY (ACTIVE READINGS)'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                Ultrasonic HC-SR04 continuous ping verification. Fault detection triggers if echo pulse times out or drops below physical threshold.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-4 text-xs font-mono">
+              <div className="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg">
+                <span className="text-slate-500 text-[10px] block font-bold uppercase">Active Threshold</span>
+                <span className="text-cyan-400 font-bold">{parseFloat(activeHardwareThreshold).toFixed(1)} cm</span>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg">
+                <span className="text-slate-500 text-[10px] block font-bold uppercase">Serial Connection</span>
+                <span className={isConnected ? 'text-emerald-400 font-bold' : 'text-slate-400'}>
+                  {isConnected ? '9600 Baud USB' : 'Disconnected'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Microcontroller Commands */}
           <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
             <h4 className="text-sm font-bold text-white flex items-center gap-2">
               <Cpu className="w-4 h-4 text-blue-400" />
-              Arduino HC-SR04 Microcontroller Bus Commands
+              Arduino Microcontroller Bus Actuation (Pin Controls)
             </h4>
             <p className="text-xs text-slate-400">
-              Trigger instant serial packets to physical hardware pins over Web Serial (Baud 9600).
+              Trigger instant serial packets to physical hardware pins over Web Serial (Baud 9600 8-N-1).
             </p>
 
             <div className="flex flex-wrap items-center gap-2 pt-2">
@@ -461,6 +600,189 @@ export function AdminPortal({
                 <span>Flash Diagnostic LEDs</span>
               </button>
             </div>
+          </div>
+
+          {/* Research Response-Time Benchmark Analytics */}
+          <div className="bg-slate-950 p-4 md:p-5 rounded-xl border border-slate-800 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-4 pb-3 border-b border-slate-800">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-emerald-400" />
+                  <h4 className="text-sm font-bold text-white">
+                    Research Response-Time Benchmark Analytics
+                  </h4>
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 uppercase">
+                    Actual Latency
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Actual execution latency measured using <code className="text-cyan-300">performance.now()</code> from sensor detection trigger to database confirmation. No fabricated values.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleExportBenchmarksCsv}
+                  disabled={responseTimeMetrics.length === 0}
+                  className="px-3 py-1.5 bg-emerald-700/30 hover:bg-emerald-700/50 disabled:opacity-30 disabled:pointer-events-none text-emerald-300 border border-emerald-600/40 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export Benchmark CSV</span>
+                </button>
+
+                {onClearResponseMetrics && (
+                  <button
+                    type="button"
+                    onClick={onClearResponseMetrics}
+                    disabled={responseTimeMetrics.length === 0}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:pointer-events-none text-slate-300 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Reset Metrics</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* 4 Statistics KPI Cards */}
+            {(() => {
+              const filtered = (responseTimeMetrics || []).filter(m => {
+                if (metricSourceFilter === 'ALL') return true;
+                return m.source === metricSourceFilter;
+              });
+              const count = filtered.length;
+              const minVal = count > 0 ? Math.min(...filtered.map(m => m.totalMs)).toFixed(1) : '--';
+              const maxVal = count > 0 ? Math.max(...filtered.map(m => m.totalMs)).toFixed(1) : '--';
+              const avgVal = count > 0 ? (filtered.reduce((sum, m) => sum + m.totalMs, 0) / count).toFixed(1) : '--';
+
+              return (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Total Samples</span>
+                      <span className="text-2xl font-black font-mono text-white mt-1 block">{count}</span>
+                      <span className="text-[9px] text-slate-500 font-semibold">Events Recorded</span>
+                    </div>
+
+                    <div className="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                      <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider block">Min Response Time</span>
+                      <span className="text-2xl font-black font-mono text-emerald-400 mt-1 block">
+                        {minVal !== '--' ? `${minVal} ms` : '--'}
+                      </span>
+                      <span className="text-[9px] text-slate-500 font-semibold">Fastest Execution</span>
+                    </div>
+
+                    <div className="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                      <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider block">Average Response Time</span>
+                      <span className="text-2xl font-black font-mono text-cyan-400 mt-1 block">
+                        {avgVal !== '--' ? `${avgVal} ms` : '--'}
+                      </span>
+                      <span className="text-[9px] text-slate-500 font-semibold">Mean Sensor-to-DB</span>
+                    </div>
+
+                    <div className="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                      <span className="text-[10px] text-amber-400 font-bold uppercase tracking-wider block">Max Response Time</span>
+                      <span className="text-2xl font-black font-mono text-amber-400 mt-1 block">
+                        {maxVal !== '--' ? `${maxVal} ms` : '--'}
+                      </span>
+                      <span className="text-[9px] text-slate-500 font-semibold">Peak Network / Render</span>
+                    </div>
+                  </div>
+
+                  {/* Source Filter Switcher */}
+                  <div className="flex items-center justify-between gap-3 pt-2">
+                    <div className="flex items-center gap-1.5 text-xs bg-slate-900 p-1 rounded-lg border border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setMetricSourceFilter('ALL')}
+                        className={`px-2.5 py-1 rounded text-xs font-bold cursor-pointer transition-colors ${
+                          metricSourceFilter === 'ALL' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        All ({responseTimeMetrics.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMetricSourceFilter('HARDWARE')}
+                        className={`px-2.5 py-1 rounded text-xs font-bold cursor-pointer transition-colors ${
+                          metricSourceFilter === 'HARDWARE' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Hardware Only ({responseTimeMetrics.filter(m => m.source === 'HARDWARE').length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMetricSourceFilter('SIMULATION')}
+                        className={`px-2.5 py-1 rounded text-xs font-bold cursor-pointer transition-colors ${
+                          metricSourceFilter === 'SIMULATION' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Simulation Only ({responseTimeMetrics.filter(m => m.source === 'SIMULATION').length})
+                      </button>
+                    </div>
+
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      Showing {filtered.length} sample(s)
+                    </span>
+                  </div>
+
+                  {/* Latency Log Table */}
+                  <div className="overflow-x-auto rounded-lg border border-slate-800 max-h-60 overflow-y-auto">
+                    <table className="w-full text-left text-xs text-slate-300 font-mono">
+                      <thead className="bg-slate-900 text-slate-400 uppercase text-[10px] sticky top-0 border-b border-slate-800">
+                        <tr>
+                          <th className="px-3 py-2">Timestamp</th>
+                          <th className="px-3 py-2">Data Source</th>
+                          <th className="px-3 py-2">Event</th>
+                          <th className="px-3 py-2">Sensor &rarr; UI</th>
+                          <th className="px-3 py-2">UI &rarr; Database</th>
+                          <th className="px-3 py-2 text-right">Total Response</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 text-xs">
+                        {filtered.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="px-3 py-6 text-center text-slate-500 font-sans">
+                              No latency telemetry captured yet. Trigger a vehicle arrival/departure or hardware serial packet to record live timing.
+                            </td>
+                          </tr>
+                        ) : (
+                          filtered.map(m => (
+                            <tr key={m.id} className="hover:bg-slate-900/60">
+                              <td className="px-3 py-2 text-slate-400 text-[11px]">
+                                {new Date(m.timestamp).toLocaleTimeString()}
+                              </td>
+                              <td className="px-3 py-2">
+                                <span className={`px-2 py-0.5 rounded text-[9px] font-black tracking-wide border ${
+                                  m.source === 'HARDWARE'
+                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                    : 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                                }`}>
+                                  {m.source}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 font-sans font-semibold text-white">
+                                {m.eventType === 'VEHICLE_ARRIVED' ? '🚗 Vehicle Arrived' : '🏁 Vehicle Departed'}
+                              </td>
+                              <td className="px-3 py-2 text-cyan-300">
+                                {m.detectionToUiMs} ms
+                              </td>
+                              <td className="px-3 py-2 text-slate-300">
+                                {m.uiToDbMs} ms
+                              </td>
+                              <td className="px-3 py-2 text-right font-bold text-emerald-400">
+                                {m.totalMs} ms
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
